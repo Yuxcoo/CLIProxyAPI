@@ -1,0 +1,41 @@
+name: Build Stats Image
+
+on:
+  schedule:
+    - cron: '0 0 */3 * *'
+  workflow_dispatch:
+
+# 增加全局环境变量，强制过渡期间的 Actions 使用 Node.js 24
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Lowercase GitHub owner name
+        id: lc-owner
+        run: |
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_OUTPUT
+      
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and push
+        # 将 v5 升级为原生支持新特性且维护活跃的 v6 版本
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.stats
+          push: true
+          tags: ghcr.io/${{ steps.lc-owner.outputs.owner }}/cliproxyapi-stats:latest
