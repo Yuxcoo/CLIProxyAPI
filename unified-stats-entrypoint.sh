@@ -68,6 +68,21 @@ pgsql_exec() {
   psql "${dsn}" -v ON_ERROR_STOP=1 -q -c "$1"
 }
 
+pgsql_query_raw() {
+  dsn="$(get_pg_dsn || true)"
+  if [ -z "${dsn}" ]; then
+    return 1
+  fi
+
+  prefix="$(pg_sql_prefix || true)"
+  if [ -n "${prefix}" ]; then
+    psql "${dsn}" -v ON_ERROR_STOP=1 -q -t -A -c "${prefix} $1"
+    return $?
+  fi
+
+  psql "${dsn}" -v ON_ERROR_STOP=1 -q -t -A -c "$1"
+}
+
 pgsql_upsert_usage_file() {
   dsn="$(get_pg_dsn || true)"
   if [ -z "${dsn}" ] || [ ! -s "${STATS_FILE}" ]; then
@@ -215,7 +230,7 @@ pull_stats() {
       fi
 
       tmp_file="${STATS_FILE}.tmp"
-      if pgsql_exec "SELECT data::text FROM usage_backup WHERE id = 1;" > "${tmp_file}" 2>/dev/null && \
+      if pgsql_query_raw "SELECT data::text FROM usage_backup WHERE id = 1;" > "${tmp_file}" 2>/dev/null && \
          [ -s "${tmp_file}" ] && grep -q '"usage"' "${tmp_file}"; then
         mv "${tmp_file}" "${STATS_FILE}"
         log "Restored usage statistics from PostgreSQL."
