@@ -68,6 +68,33 @@ pgsql_exec() {
   psql "${dsn}" -v ON_ERROR_STOP=1 -q -c "$1"
 }
 
+pgsql_upsert_usage_file() {
+  dsn="$(get_pg_dsn || true)"
+  if [ -z "${dsn}" ] || [ ! -s "${STATS_FILE}" ]; then
+    return 1
+  fi
+
+  prefix="$(pg_sql_prefix || true)"
+  json_data="$(tr -d '\r\n' < "${STATS_FILE}")"
+
+  if [ -n "${prefix}" ]; then
+    psql "${dsn}" -v ON_ERROR_STOP=1 >/dev/null <<EOF
+${prefix}
+INSERT INTO usage_backup (id, data, updated_at)
+VALUES (1, \$cliproxyapi_usage\$${json_data}\$cliproxyapi_usage\$::jsonb, NOW())
+ON CONFLICT (id) DO UPDATE
+SET data = EXCLUDED.data, updated_at = NOW();
+EOF
+    return $?
+  fi
+
+  psql "${dsn}" -v ON_ERROR_STOP=1 >/dev/null <<EOF
+INSERT INTO usage_backup (id, data, updated_at)
+VALUES (1, \$cliproxyapi_usage\$${json_data}\$cliproxyapi_usage\$::jsonb, NOW())
+ON CONFLICT (id) DO UPDATE
+SET data = EXCLUDED.data, updated_at = NOW();
+EOF
+}
 read_port_from_file() {
   if [ ! -f "$1" ]; then
     return 1
@@ -221,17 +248,15 @@ push_stats() {
 
   case "${BACKEND}" in
     pgsql)
-      json_data="$(tr -d '\r\n' < "${STATS_FILE}" | sed "s/'/''/g")"
-      if pgsql_exec "
-        INSERT INTO usage_backup (id, data, updated_at)
-        VALUES (1, '${json_data}'::jsonb, NOW())
-        ON CONFLICT (id) DO UPDATE
-        SET data = EXCLUDED.data, updated_at = NOW();
-      " >/dev/null 2>&1; then
+      if pgsql_upsert_usage_file 2>/tmp/usage-pgsql-error.log; then
         log "Synced usage statistics to PostgreSQL."
       else
         log "Failed to sync usage statistics to PostgreSQL."
+        if [ -s /tmp/usage-pgsql-error.log ]; then
+          cat /tmp/usage-pgsql-error.log >&2
+        fi
       fi
+      rm -f /tmp/usage-pgsql-error.log
       ;;
     s3)
       if rclone copyto "${STATS_FILE}" "${RCLONE_REMOTE}:${OBJECTSTORE_BUCKET}/${STATS_REMOTE_KEY}" \
@@ -299,6 +324,7 @@ import_usage_snapshot() {
   http_code="$(printf '%s\n' "${response}" | tail -n1)"
   if [ "${http_code}" = "200" ]; then
     log "Imported usage statistics into the running service."
+    push_stats
     return 0
   fi
 
